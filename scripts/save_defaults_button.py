@@ -75,69 +75,125 @@ def unload_models_from_memory():
     Safely unload all models and reset state without breaking system modules
     """
     try:
-        print("开始安全卸载模型...")
+        print("🔄 开始安全卸载模型...")
+        unloaded_items = []
 
-        # 1. 卸载当前模型权重
-        result_msg = sd_models.unload_model_weights()
-
-        # 2. 安全重置模型状态 - 避免破坏系统
+        # 1. 卸载当前主模型权重到 CPU
+        current_model = None
         try:
             if hasattr(shared, 'sd_model') and shared.sd_model is not None:
-                shared.sd_model = None
-        except Exception:
-            pass
+                if hasattr(shared.sd_model, 'sd_checkpoint_info'):
+                    current_model = shared.sd_model.sd_checkpoint_info.title
+                elif hasattr(shared.sd_model, 'filename'):
+                    current_model = shared.sd_model.filename
+                else:
+                    current_model = "当前主模型"
 
+                result_msg = sd_models.unload_model_weights()
+                unloaded_items.append(f"🎨 主模型: {current_model}")
+            else:
+                result_msg = "没有加载的主模型"
+        except Exception as e:
+            result_msg = f"卸载主模型时出错: {str(e)}"
+
+        # 2. 清理 model_data 状态
         try:
             if hasattr(sd_models, 'model_data'):
-                sd_models.model_data.sd_model = None
-                sd_models.model_data.loaded_sd_models = []
+                if hasattr(sd_models.model_data, 'loaded_sd_models') and sd_models.model_data.loaded_sd_models:
+                    model_count = len(sd_models.model_data.loaded_sd_models)
+                    sd_models.model_data.loaded_sd_models = []
+                    unloaded_items.append(f"📋 已加载模型列表 ({model_count} 个)")
+
                 sd_models.model_data.was_loaded_at_least_once = False
         except Exception:
             pass
 
-        # 3. 安全清理额外网络（不重置注册表）
+        # 3. 清理 LoRA 和额外网络
+        lora_count = 0
         try:
-            _clear_lora_networks()
+            import networks
+            if hasattr(networks, 'loaded_networks'):
+                lora_count = len(networks.loaded_networks)
+                networks.loaded_networks.clear()
+                networks.networks_in_memory.clear()
+                networks.loaded_bundle_embeddings.clear()
+                if lora_count > 0:
+                    unloaded_items.append(f"🌟 LoRA 模型 ({lora_count} 个)")
+
+            # 清理其他额外网络
+            from modules import extra_networks
+            class DummyProcessing:
+                pass
+            extra_networks.deactivate(DummyProcessing(), {})
+            unloaded_items.append("🔗 其他额外网络")
+        except ImportError:
+            pass
         except Exception:
             pass
 
-        # 4. 安全清理 VAE 模型
+        # 4. 清理 VAE 模型
         try:
-            if hasattr(shared, 'sd_vae'):
+            vae_name = "未知 VAE"
+            if hasattr(shared, 'sd_vae') and shared.sd_vae is not None:
+                if hasattr(shared.sd_vae, 'filename'):
+                    vae_name = shared.sd_vae.filename
+                elif hasattr(shared.sd_vae, 'name'):
+                    vae_name = shared.sd_vae.name
                 shared.sd_vae = None
+                unloaded_items.append(f"🎭 VAE 模型: {vae_name}")
         except Exception:
             pass
 
-        # 5. 清理 GPU 缓存
+        # 5. 清理 Textual Inversion 嵌入
+        embedding_count = 0
+        try:
+            if hasattr(shared, 'sd_embedding_db'):
+                if hasattr(shared.sd_embedding_db, 'word_embeddings'):
+                    embedding_count = len(shared.sd_embedding_db.word_embeddings)
+                    shared.sd_embedding_db.word_embeddings.clear()
+                if hasattr(shared.sd_embedding_db, 'loaded_embeddings'):
+                    if embedding_count == 0:
+                        embedding_count = len(shared.sd_embedding_db.loaded_embeddings)
+                    shared.sd_embedding_db.loaded_embeddings.clear()
+                if embedding_count > 0:
+                    unloaded_items.append(f"📝 文本嵌入 ({embedding_count} 个)")
+        except Exception:
+            pass
+
+        # 6. 清理 GPU 缓存
         try:
             import torch
             if torch.cuda.is_available():
+                memory_before = torch.cuda.memory_allocated() / (1024**2)  # MB
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+                memory_after = torch.cuda.memory_allocated() / (1024**2)  # MB
+                freed_memory = memory_before - memory_after
+                if freed_memory > 1:  # 只显示有意义的内存释放
+                    unloaded_items.append(f"💾 GPU 缓存 (释放 {freed_memory:.1f} MB)")
         except Exception:
             pass
 
-        # 6. 安全的内存清理
+        # 7. 垃圾回收
         try:
             gc.collect()
+            unloaded_items.append("🧹 系统垃圾回收")
         except Exception:
             pass
 
-        result = f"✅ 模型安全卸载成功: {result_msg}"
+        # 构建详细结果
+        if unloaded_items:
+            details = "\n".join(f"  ✅ {item}" for item in unloaded_items)
+            result = f"🎯 模型卸载完成！\n{details}\n\n📊 主模型状态: {result_msg}"
+        else:
+            result = "ℹ️ 没有发现需要卸载的模型"
+
         print(result)
         return result
 
     except Exception as e:
         error_msg = f"❌ 卸载模型时出错: {str(e)}"
         print(error_msg)
-
-        # 基本的状态重置
-        try:
-            if hasattr(shared, 'sd_model'):
-                shared.sd_model = None
-        except:
-            pass
-
         return error_msg
 
 
