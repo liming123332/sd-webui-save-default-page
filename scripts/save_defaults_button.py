@@ -4,7 +4,6 @@ import gc
 from modules import script_callbacks, sd_models
 from modules.ui_components import ToolButton
 from modules.ui import save_style_symbol, refresh_symbol
-from ldm_patched.modules import model_management
 
 
 _buttons = {}
@@ -18,16 +17,21 @@ def unload_models_from_memory():
     try:
         print("开始卸载模型...")
 
-        # 卸载所有模型
-        model_management.unload_all_models()
+        # 使用 WebUI 的安全卸载方法
+        result_msg = sd_models.unload_model_weights()
 
         # 清理垃圾回收
         gc.collect()
 
-        # 清理 GPU 缓存
-        model_management.soft_empty_cache(force=True)
+        # 尝试清理 GPU 内存（如果可用）
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
-        result = "✅ 所有模型已成功从内存中卸载"
+        result = f"✅ 模型卸载成功: {result_msg}"
         print(result)
         return result
 
