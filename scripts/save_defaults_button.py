@@ -9,73 +9,135 @@ from modules.ui import save_style_symbol, refresh_symbol
 _buttons = {}
 
 
+def _clear_lora_networks():
+    """清理 LoRA 网络"""
+    try:
+        # 尝试访问 LoRA 扩展的 loaded_networks
+        from modules import extra_networks
+
+        # 创建空的处理对象来触发所有额外网络的 deactivate
+        class DummyProcessing:
+            pass
+
+        p = DummyProcessing()
+
+        # 清理所有额外网络
+        extra_networks.deactivate(p, {})
+
+        # 清理 LoRA 特定的网络
+        try:
+            import networks
+            if hasattr(networks, 'loaded_networks'):
+                networks.loaded_networks.clear()
+            if hasattr(networks, 'networks_in_memory'):
+                networks.networks_in_memory.clear()
+            if hasattr(networks, 'loaded_bundle_embeddings'):
+                networks.loaded_bundle_embeddings.clear()
+        except ImportError:
+            pass
+
+        print("✅ LoRA 网络已清理")
+
+    except Exception as e:
+        print(f"⚠️ 清理 LoRA 网络时出现警告: {str(e)}")
+
+
+def _clear_extra_networks():
+    """清理所有额外网络（包括 LoRA, hypernetworks 等）"""
+    try:
+        from modules import extra_networks
+
+        # 重置额外网络注册表
+        extra_networks.initialize()
+
+        # 清理所有已加载的额外网络
+        class DummyProcessing:
+            pass
+
+        p = DummyProcessing()
+
+        # 调用 deactivate 清理所有网络
+        for name, extra_network in extra_networks.extra_network_registry.items():
+            try:
+                extra_network.deactivate(p)
+            except Exception as e:
+                print(f"⚠️ 清理额外网络 {name} 时出现警告: {str(e)}")
+
+        print("✅ 额外网络已清理")
+
+    except Exception as e:
+        print(f"⚠️ 清理额外网络时出现警告: {str(e)}")
+
+
 def unload_models_from_memory():
     """
-    从缓存和内存中完全卸载所有模型并重置状态
-    Completely unload all models from cache and memory and reset state
+    安全地卸载所有模型并重置状态，避免破坏系统模块
+    Safely unload all models and reset state without breaking system modules
     """
     try:
-        print("开始完全卸载模型...")
+        print("开始安全卸载模型...")
 
         # 1. 卸载当前模型权重
         result_msg = sd_models.unload_model_weights()
 
-        # 2. 完全重置模型状态 - 关键修复
-        if hasattr(shared, 'sd_model'):
-            shared.sd_model = None
-
-        if hasattr(sd_models, 'model_data'):
-            sd_models.model_data.sd_model = None
-            sd_models.model_data.loaded_sd_models = []
-            sd_models.model_data.was_loaded_at_least_once = False
-
-        # 3. 清理 forge 相关状态（如果存在）
+        # 2. 安全重置模型状态 - 避免破坏系统
         try:
-            import modules_forge.ops as forge_ops
-            if hasattr(forge_ops, 'clear_cache'):
-                forge_ops.clear_cache()
-        except ImportError:
+            if hasattr(shared, 'sd_model') and shared.sd_model is not None:
+                shared.sd_model = None
+        except Exception:
             pass
 
-        # 4. 清理 patcher 系统（如果存在）
         try:
-            import ldm_patched.modules.model_management as model_management
-            model_management.cleanup_models()
-            model_management.soft_empty_cache(force=True)
-        except ImportError:
+            if hasattr(sd_models, 'model_data'):
+                sd_models.model_data.sd_model = None
+                sd_models.model_data.loaded_sd_models = []
+                sd_models.model_data.was_loaded_at_least_once = False
+        except Exception:
             pass
 
-        # 5. 确保设备状态正确
+        # 3. 安全清理额外网络（不重置注册表）
+        try:
+            _clear_lora_networks()
+        except Exception:
+            pass
+
+        # 4. 安全清理 VAE 模型
+        try:
+            if hasattr(shared, 'sd_vae'):
+                shared.sd_vae = None
+        except Exception:
+            pass
+
+        # 5. 清理 GPU 缓存
         try:
             import torch
-            # 确保设备重置为默认状态
-            devices.device = devices.get_optimal_device()
-
-            # 清理 CUDA 缓存
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-        except ImportError:
+        except Exception:
             pass
 
-        # 6. 强制垃圾回收
-        gc.collect()
+        # 6. 安全的内存清理
+        try:
+            gc.collect()
+        except Exception:
+            pass
 
-        result = f"✅ 模型完全卸载成功: {result_msg}"
+        result = f"✅ 模型安全卸载成功: {result_msg}"
         print(result)
         return result
 
     except Exception as e:
-        error_msg = f"❌ 完全卸载模型时出错: {str(e)}"
+        error_msg = f"❌ 卸载模型时出错: {str(e)}"
         print(error_msg)
-        # 即使出错，也要尝试重置状态
+
+        # 基本的状态重置
         try:
             if hasattr(shared, 'sd_model'):
                 shared.sd_model = None
-            if hasattr(sd_models, 'model_data'):
-                sd_models.model_data.sd_model = None
         except:
             pass
+
         return error_msg
 
 
