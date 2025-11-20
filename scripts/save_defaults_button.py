@@ -1,7 +1,7 @@
 import gradio as gr
 import gc
 
-from modules import script_callbacks, sd_models
+from modules import script_callbacks, sd_models, shared, devices
 from modules.ui_components import ToolButton
 from modules.ui import save_style_symbol, refresh_symbol
 
@@ -11,33 +11,71 @@ _buttons = {}
 
 def unload_models_from_memory():
     """
-    从缓存和内存中卸载所有模型
-    Unload all models from cache and memory
+    从缓存和内存中完全卸载所有模型并重置状态
+    Completely unload all models from cache and memory and reset state
     """
     try:
-        print("开始卸载模型...")
+        print("开始完全卸载模型...")
 
-        # 使用 WebUI 的安全卸载方法
+        # 1. 卸载当前模型权重
         result_msg = sd_models.unload_model_weights()
 
-        # 清理垃圾回收
-        gc.collect()
+        # 2. 完全重置模型状态 - 关键修复
+        if hasattr(shared, 'sd_model'):
+            shared.sd_model = None
 
-        # 尝试清理 GPU 内存（如果可用）
+        if hasattr(sd_models, 'model_data'):
+            sd_models.model_data.sd_model = None
+            sd_models.model_data.loaded_sd_models = []
+            sd_models.model_data.was_loaded_at_least_once = False
+
+        # 3. 清理 forge 相关状态（如果存在）
         try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            import modules_forge.ops as forge_ops
+            if hasattr(forge_ops, 'clear_cache'):
+                forge_ops.clear_cache()
         except ImportError:
             pass
 
-        result = f"✅ 模型卸载成功: {result_msg}"
+        # 4. 清理 patcher 系统（如果存在）
+        try:
+            import ldm_patched.modules.model_management as model_management
+            model_management.cleanup_models()
+            model_management.soft_empty_cache(force=True)
+        except ImportError:
+            pass
+
+        # 5. 确保设备状态正确
+        try:
+            import torch
+            # 确保设备重置为默认状态
+            devices.device = devices.get_optimal_device()
+
+            # 清理 CUDA 缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except ImportError:
+            pass
+
+        # 6. 强制垃圾回收
+        gc.collect()
+
+        result = f"✅ 模型完全卸载成功: {result_msg}"
         print(result)
         return result
 
     except Exception as e:
-        error_msg = f"❌ 卸载模型时出错: {str(e)}"
+        error_msg = f"❌ 完全卸载模型时出错: {str(e)}"
         print(error_msg)
+        # 即使出错，也要尝试重置状态
+        try:
+            if hasattr(shared, 'sd_model'):
+                shared.sd_model = None
+            if hasattr(sd_models, 'model_data'):
+                sd_models.model_data.sd_model = None
+        except:
+            pass
         return error_msg
 
 
